@@ -1,0 +1,14 @@
+{
+  "name": "Glide Test",
+  "description": "Hi discord! :D",
+  "motd": "Glide Server",
+  "allow_online_mode": true,
+  "server_properties": {
+    "level-name": "world",
+    "gamemode": "survival",
+    "difficulty": "normal",
+    "allow-nether": true,
+    "spawn-protection": 16,
+    "max-players": 20
+  }
+}

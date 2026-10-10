@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "runners": {
+    "ubuntu-latest": {
+      "cpu": 4,
+      "memory_gb": 16,
+      "storage_gb": 14,
+      "recommended_minecraft_xmx_gb": 6,
+      "maximum_initial_minecraft_xmx_gb": 8
+    },
+    "github-gpu-larger": {
+      "cpu": 4,
+      "memory_gb": 28,
+      "storage_gb": 176,
+      "gpu": "Tesla T4",
+      "vram_gb": 16,
+      "notes": "Requires an organization/enterprise larger runner or an equivalent self-hosted GPU runner; standard ubuntu-latest does not provide this GPU."
+    }
+  }
+}

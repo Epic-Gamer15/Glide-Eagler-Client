@@ -1,0 +1,19 @@
+[package]
+name = "glide-gl-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Robbing Opengl and translation for glide"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["vulkan"]
+vulkan = ["glide-gfx/vulkan"]
+
+[dependencies]
+glide-gfx = { path = "../glide-gfx" }
+x11 = { version = "2.21", features = ["xlib"] }
+libc = "0.2"
+
+[build-dependencies]

@@ -1,0 +1,474 @@
+name: Glide Server Session
+
+on:
+  workflow_dispatch:
+    inputs:
+      minecraft_version:
+        description: Minecraft server version
+        required: true
+        default: 1.20.5
+        type: string
+      xmx_gb:
+        description: JVM heap size in GB
+        required: true
+        default: 4
+        type: number
+      online_mode:
+        description: Whether the server should require online auth
+        required: true
+        default: true
+        type: boolean
+      server_name:
+        description: Optional override for the server name in Server/Style/server.json
+        required: false
+        default: ""
+        type: string
+      server_description:
+        description: Optional override for the server description in Server/Style/server.json
+        required: false
+        default: ""
+        type: string
+      max_runtime_minutes:
+        description: Maximum runtime before a server handoff; GitHub caps jobs at 360 minutes
+        required: true
+        default: 330
+        type: number
+      server_slot:
+        description: Active server slot; A and B alternate during handoff
+        required: true
+        default: A
+        type: choice
+        options:
+          - A
+          - B
+      handoff_id:
+        description: Unique identifier for an A/B handoff
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Read server style config
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERVER_STYLE_FILE="$GITHUB_WORKSPACE/Server/Style/server.json"
+          if [ -f "$SERVER_STYLE_FILE" ]; then
+            python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print("GLIDE_SERVER_NAME="+d.get("name","Glide Server")); print("GLIDE_SERVER_DESCRIPTION="+d.get("description","A lightweight Minecraft server profile for your Glide setup.")); print("GLIDE_SERVER_MOTD="+d.get("motd",d.get("name","Glide Server")))' "$SERVER_STYLE_FILE" >> "$GITHUB_ENV"
+          else
+            echo "GLIDE_SERVER_NAME=Glide Server" >> "$GITHUB_ENV"
+            echo "GLIDE_SERVER_DESCRIPTION=A lightweight Minecraft server profile for your Glide setup." >> "$GITHUB_ENV"
+            echo "GLIDE_SERVER_MOTD=Glide Server" >> "$GITHUB_ENV"
+          fi
+
+      - name: Prepare server files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/server"
+          SERVER_NAME="${{ inputs.server_name }}"
+          SERVER_DESC="${{ inputs.server_description }}"
+          if [ -z "$SERVER_NAME" ]; then
+            SERVER_NAME="${GLIDE_SERVER_NAME:-Glide Server}"
+          fi
+          if [ -z "$SERVER_DESC" ]; then
+            SERVER_DESC="${GLIDE_SERVER_DESCRIPTION:-A lightweight Minecraft server profile for your Glide setup.}"
+          fi
+          echo "SERVER_NAME=$SERVER_NAME" >> "$GITHUB_ENV"
+          echo "SERVER_DESC=$SERVER_DESC" >> "$GITHUB_ENV"
+          echo "GLIDE_SERVER_NAME=$SERVER_NAME" >> "$GITHUB_ENV"
+          echo "GLIDE_SERVER_DESCRIPTION=$SERVER_DESC" >> "$GITHUB_ENV"
+
+          if [ -d "$GITHUB_WORKSPACE/Server/Icon" ]; then
+            cp -a "$GITHUB_WORKSPACE/Server/Icon/." "$GITHUB_WORKSPACE/server/"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/Server/Plugins" ]; then
+            mkdir -p "$GITHUB_WORKSPACE/server/plugins"
+            cp -a "$GITHUB_WORKSPACE/Server/Plugins/." "$GITHUB_WORKSPACE/server/plugins/"
+          fi
+
+          cat > "$GITHUB_WORKSPACE/server/server.properties" <<EOF
+          level-name=world
+          gamemode=survival
+          difficulty=normal
+          allow-nether=true
+          online-mode=${{ inputs.online_mode }}
+          motd=${SERVER_DESC}
+          server-name=${SERVER_NAME}
+          server-port=25565
+          server-ip=127.0.0.1
+          spawn-protection=16
+          max-players=20
+          accepts-transfers=true
+          EOF
+
+          echo "eula=true" > "$GITHUB_WORKSPACE/server/eula.txt"
+          echo "Accepted Minecraft EULA automatically for this server session."
+
+      - name: Detect and install required Java
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.minecraft_version }}"
+          MANIFEST_URL="https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
+          VERSION_URL="$(curl -fsSL "$MANIFEST_URL" | python3 -c 'import json,sys; v=sys.argv[1]; d=json.load(sys.stdin); m=next(x for x in d["versions"] if x["id"]==v); print(m["url"])' "$VERSION")"
+          JAVA_MAJOR="$(curl -fsSL "$VERSION_URL" | python3 -c 'import json,sys,re; d=json.load(sys.stdin); a=d.get("javaVersion",{}).get("majorVersion"); print(a or "")')"
+          if [ -z "$JAVA_MAJOR" ]; then
+            echo "Minecraft $VERSION did not publish a required Java version; defaulting to Java 21."
+            JAVA_MAJOR=21
+          fi
+          echo "Minecraft $VERSION requires Java $JAVA_MAJOR"
+          echo "JAVA_MAJOR=$JAVA_MAJOR" >> "$GITHUB_ENV"
+
+      - name: Install required Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '${{ env.JAVA_MAJOR }}'
+
+      - name: Download server jar
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.minecraft_version }}"
+          JAR_DIR="$GITHUB_WORKSPACE/server"
+          mkdir -p "$JAR_DIR"
+          MANIFEST_URL="https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
+          JAR_URL="$(curl -fsSL "$MANIFEST_URL" | python3 -c 'import json,sys; data=json.load(sys.stdin); versions=data["versions"]; version=sys.argv[1]; match=next((v for v in versions if v["id"]==version), None); assert match, f"Version not found: {version}"; print(match["url"])' "$VERSION")"
+          curl -fsSL "$JAR_URL" -o "$JAR_DIR/version.json"
+          SERVER_URL=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print(d["downloads"]["server"]["url"])' "$JAR_DIR/version.json")
+          curl -fsSL "$SERVER_URL" -o "$JAR_DIR/server.jar"
+          echo "GLIDE_SERVER_JAR=$JAR_DIR/server.jar"
+
+      - name: Start server
+        env:
+          PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORLD_ROOT="$GITHUB_WORKSPACE/Server/World"
+          TUNNEL_CONFIG="$GITHUB_WORKSPACE/Server/Runtime/tunnels.txt"
+          mkdir -p "$WORLD_ROOT"
+          if [ ! -f "$TUNNEL_CONFIG" ]; then
+            echo "::error::Missing $TUNNEL_CONFIG"
+            exit 1
+          fi
+          TUNNEL_A="$(grep '^A=' "$TUNNEL_CONFIG" | head -n 1 | cut -d= -f2-)"
+          TUNNEL_B="$(grep '^B=' "$TUNNEL_CONFIG" | head -n 1 | cut -d= -f2-)"
+          if [ -z "$TUNNEL_A" ] || [ -z "$TUNNEL_B" ]; then
+            echo "::error::Both A and B tunnel endpoints are required"
+            exit 1
+          fi
+          if [ "${{ inputs.server_slot }}" = "A" ]; then
+            NEXT_SLOT="B"
+            NEXT_TUNNEL="$TUNNEL_B"
+          else
+            NEXT_SLOT="A"
+            NEXT_TUNNEL="$TUNNEL_A"
+          fi
+          TARGET_HOST="${NEXT_TUNNEL%:*}"
+          TARGET_PORT="${NEXT_TUNNEL##*:}"
+          echo "Next slot $NEXT_SLOT tunnel: $NEXT_TUNNEL"
+
+          MINECRAFT_VERSION="${{ inputs.minecraft_version }}"
+          VERSION_WORLD_ROOT="$WORLD_ROOT/$MINECRAFT_VERSION"
+          mkdir -p "$VERSION_WORLD_ROOT"
+          echo "World storage for Minecraft $MINECRAFT_VERSION: $VERSION_WORLD_ROOT"
+
+          LATEST_SAVE="$(find "$VERSION_WORLD_ROOT" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1 || true)"
+          if [ -n "$LATEST_SAVE" ] && [ -d "$LATEST_SAVE/world" ]; then
+            # Older runs accidentally nested world/world/... by copying the world twice.
+            # Find the actual world root by locating the deepest directory containing level.dat.
+            SAVED_WORLD="$(find "$LATEST_SAVE/world" -type f -name level.dat -printf '%d %h\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2- || true)"
+            if [ -n "$SAVED_WORLD" ] && [ -s "$SAVED_WORLD/level.dat" ]; then
+              echo "GLIDE_WORLD_MODE=restore"
+              rm -rf "$GITHUB_WORKSPACE/server/world"
+              cp -a "$SAVED_WORLD" "$GITHUB_WORKSPACE/server/world"
+              echo "GLIDE_WORLD_RESTORED=$LATEST_SAVE"
+              echo "GLIDE_WORLD_SOURCE=$SAVED_WORLD"
+            else
+              echo "Latest save has no valid level.dat; Minecraft will generate a new world."
+              rm -rf "$GITHUB_WORKSPACE/server/world"
+              echo "GLIDE_WORLD_MODE=new"
+              echo "GLIDE_WORLD_RESTORED=none"
+            fi
+          else
+            echo "No saved world found for Minecraft $MINECRAFT_VERSION; Minecraft will generate a new world."
+            rm -rf "$GITHUB_WORKSPACE/server/world"
+            echo "GLIDE_WORLD_MODE=new"
+            echo "GLIDE_WORLD_RESTORED=none"
+          fi
+
+          git_push_with_retry() {
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+                return 0
+              fi
+
+              echo "::warning::Git push failed on attempt $attempt; fetching ${GITHUB_REF_NAME} and rebasing before retry."
+              if ! git fetch origin "${GITHUB_REF_NAME}"; then
+                sleep 2
+                continue
+              fi
+
+              if ! git rebase "origin/${GITHUB_REF_NAME}"; then
+                echo "::error::Git rebase failed while synchronizing ${GITHUB_REF_NAME}."
+                git rebase --abort || true
+                return 1
+              fi
+              sleep 2
+            done
+
+            echo "::error::Could not push synchronized changes to ${GITHUB_REF_NAME} after 5 attempts."
+            return 1
+          }
+
+          save_world() {
+            local stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+            local save_dir="$VERSION_WORLD_ROOT/$stamp-${{ github.run_id }}"
+            mkdir -p "$save_dir"
+            if [ -d "$GITHUB_WORKSPACE/server/world" ]; then
+              cp -a "$GITHUB_WORKSPACE/server/world" "$save_dir/world"
+            fi
+            if [ -d "$GITHUB_WORKSPACE/server/plugins" ]; then
+              cp -a "$GITHUB_WORKSPACE/server/plugins" "$save_dir/plugins"
+            fi
+            if [ -f "$GITHUB_WORKSPACE/server/server.properties" ]; then
+              cp -a "$GITHUB_WORKSPACE/server/server.properties" "$save_dir/server.properties"
+            fi
+            if [ -f "$GITHUB_WORKSPACE/server/eula.txt" ]; then
+              cp -a "$GITHUB_WORKSPACE/server/eula.txt" "$save_dir/eula.txt"
+            fi
+            cd "$GITHUB_WORKSPACE"
+            git config user.name "Glide Server Bot"
+            git config user.email "glide-server-bot@users.noreply.github.com"
+            git add "Server/World/${{ inputs.minecraft_version }}/$stamp-${{ github.run_id }}"
+            git commit -m "Save server world $stamp" || true
+            git_push_with_retry
+            echo "GLIDE_WORLD_SAVED=$save_dir"
+          }
+
+          trigger_handoff() {
+            export GH_TOKEN="${{ github.token }}"
+            if [ "${{ inputs.server_slot }}" = "A" ]; then
+              NEXT_SLOT="B"
+            else
+              NEXT_SLOT="A"
+            fi
+
+            HANDOFF_ID_VALUE="${{ github.run_id }}-${{ inputs.server_slot }}-$NEXT_SLOT"
+            echo "Dispatching server-session.yml on ${GITHUB_REF_NAME} with server_slot=$NEXT_SLOT handoff_id=$HANDOFF_ID_VALUE"
+
+            # Pass the next slot as an explicit workflow_dispatch input.
+            gh workflow run server-session.yml \
+              --ref "${GITHUB_REF_NAME}" \
+              -f "minecraft_version=${{ inputs.minecraft_version }}" \
+              -f "xmx_gb=${{ inputs.xmx_gb }}" \
+              -f "online_mode=${{ inputs.online_mode }}" \
+              -f "server_name=${{ inputs.server_name }}" \
+              -f "server_description=${{ inputs.server_description }}" \
+              -f "max_runtime_minutes=${{ inputs.max_runtime_minutes }}" \
+              -f "server_slot=${NEXT_SLOT}" \
+              -f "handoff_id=${HANDOFF_ID_VALUE}"
+
+            echo "GLIDE_NEXT_SLOT=$NEXT_SLOT"
+            echo "GLIDE_HANDOFF_ID=$HANDOFF_ID_VALUE"
+            echo "GLIDE_HANDOFF_TRIGGERED=true"
+          }
+
+          mark_ready() {
+            local slot="${{ inputs.server_slot }}"
+            local marker="Server/Runtime/slot-${slot}-ready"
+            if [ -n "${{ inputs.handoff_id }}" ]; then
+              marker="${marker}-${{ inputs.handoff_id }}"
+            fi
+            local marker_path="$GITHUB_WORKSPACE/$marker"
+            mkdir -p "$(dirname "$marker_path")"
+            printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$marker_path"
+            git config user.name "Glide Server Bot"
+            git config user.email "glide-server-bot@users.noreply.github.com"
+            cd "$GITHUB_WORKSPACE"
+            git add "$marker"
+            git commit -m "Mark server slot $slot ready" || true
+            git_push_with_retry
+          }
+
+          cleanup_playit() {
+            docker rm -f glide-playit >/dev/null 2>&1 || true
+          }
+
+          CONSOLE_FIFO="$GITHUB_WORKSPACE/server/minecraft-console.fifo"
+          rm -f "$CONSOLE_FIFO"
+          mkfifo "$CONSOLE_FIFO"
+          exec 9<>"$CONSOLE_FIFO"
+
+          send_command() {
+            printf '%s\n' "$1" >&9
+          }
+
+          trap 'cleanup_playit; exec 9>&- 2>/dev/null || true; exec 9<&- 2>/dev/null || true; rm -f "$CONSOLE_FIFO"; if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; fi' EXIT
+
+          if [ -z "${PLAYIT_SECRET:-}" ]; then
+            echo "::error::PLAYIT_SECRET is not configured in GitHub Actions secrets."
+            exit 1
+          fi
+
+          cd "$GITHUB_WORKSPACE/server"
+          TOTAL_RUNTIME_SECONDS="$(( ${{ inputs.max_runtime_minutes }} * 60 ))"
+          HANDOFF_LEAD_SECONDS=180
+          if [ "$TOTAL_RUNTIME_SECONDS" -le "$HANDOFF_LEAD_SECONDS" ]; then
+            HANDOFF_LEAD_SECONDS="$(( TOTAL_RUNTIME_SECONDS / 2 ))"
+          fi
+          HANDOFF_AFTER_SECONDS="$(( TOTAL_RUNTIME_SECONDS - HANDOFF_LEAD_SECONDS ))"
+          HANDOFF_WAIT_SECONDS=300
+          echo "Server slot ${{ inputs.server_slot }} will hand off after $HANDOFF_AFTER_SECONDS seconds."
+          echo "Handoff readiness wait: ${HANDOFF_WAIT_SECONDS}s."
+
+          docker rm -f glide-playit >/dev/null 2>&1 || true
+
+          java -Xmx${{ inputs.xmx_gb }}G -Xms512M -jar server.jar nogui <&9 &
+          SERVER_PID=$!
+
+          echo "Waiting for Minecraft to listen on 127.0.0.1:25565..."
+          for attempt in $(seq 1 60); do
+            if (echo >/dev/tcp/127.0.0.1/25565) >/dev/null 2>&1; then
+              echo "Minecraft is listening on 127.0.0.1:25565."
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error::Minecraft exited before opening port 25565."
+              wait "$SERVER_PID" 2>/dev/null || true
+              exit 1
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "::error::Minecraft did not open port 25565 within 120 seconds."
+              tail -n 100 "$GITHUB_WORKSPACE/server/logs/latest.log" 2>/dev/null || true
+              exit 1
+            fi
+            sleep 2
+          done
+
+          docker pull ghcr.io/playit-cloud/playit-agent:latest
+          docker run -d --name glide-playit --network host -e SECRET_KEY="$PLAYIT_SECRET" ghcr.io/playit-cloud/playit-agent:latest
+          sleep 8
+
+          echo "--- Playit agent status ---"
+          docker ps --filter name=glide-playit --format 'status={{.Status}}'
+          echo "--- Playit agent logs ---"
+          docker logs --tail 100 glide-playit 2>&1 || true
+
+          if ! docker ps --format '{{.Names}}' | grep -qx 'glide-playit'; then
+            echo "::error::Playit Docker agent stopped immediately."
+            exit 1
+          fi
+
+          echo "Minecraft server: 127.0.0.1:25565"
+          echo "Playit agent is running for slot ${{ inputs.server_slot }}."
+          mark_ready
+
+          HANDOFF_START="$(date +%s)"
+          while kill -0 "$SERVER_PID" 2>/dev/null; do
+            ELAPSED="$(( $(date +%s) - HANDOFF_START ))"
+            if [ "$ELAPSED" -ge "$HANDOFF_AFTER_SECONDS" ]; then
+              echo "GLIDE_HANDOFF_SOON=true"
+              echo "The server is preparing to swap. Progress may be lost from this point further."
+              send_command "save-all flush"
+              sleep 5
+              save_world
+
+              HANDOFF_ID="${{ github.run_id }}-${{ inputs.server_slot }}-$NEXT_SLOT"
+              NEXT_READY_MARKER="Server/Runtime/slot-$NEXT_SLOT-ready-$HANDOFF_ID"
+              echo "Waiting for unique handoff marker: $NEXT_READY_MARKER"
+
+              echo "Starting slot $NEXT_SLOT before stopping this server."
+              trigger_handoff
+              HANDOFF_DEADLINE="$(( $(date +%s) + HANDOFF_WAIT_SECONDS ))"
+              echo "Waiting up to ${HANDOFF_WAIT_SECONDS}s for $NEXT_READY_MARKER."
+              while [ "$(date +%s)" -lt "$HANDOFF_DEADLINE" ]; do
+                if git fetch origin "${GITHUB_REF_NAME}" --quiet; then
+                  if git show "origin/${GITHUB_REF_NAME}:$NEXT_READY_MARKER" >/dev/null 2>&1; then
+                  echo "Slot $NEXT_SLOT is ready at $NEXT_TUNNEL."
+                  echo "Preparing players for transfer to $TARGET_HOST:$TARGET_PORT..."
+
+                  # Keep the warning visible for the full countdown.
+                  send_command "title @a times 5 100 10"
+                  send_command "title @a title {text:'Swapping...'}"
+                  sleep 10
+
+                  echo "Transferring all players to $TARGET_HOST:$TARGET_PORT..."
+                  send_command "say The server is transferring you to the next server..."
+                  send_command "transfer $TARGET_HOST $TARGET_PORT @a"
+                  echo "::notice::Players were instructed to transfer to slot $NEXT_SLOT at $NEXT_TUNNEL."
+
+                  # /transfer starts a new client connection to B. A player leaving
+                  # @a does not prove that the new connection has finished, so A
+                  # must remain alive throughout the transfer and grace period.
+                  transfer_wait_elapsed=0
+                  players_left=false
+                  while kill -0 "$SERVER_PID" 2>/dev/null && [ "$transfer_wait_elapsed" -lt 90 ]; do
+                    if grep -q "There are 0 of a max" "$GITHUB_WORKSPACE/server/logs/latest.log" 2>/dev/null; then
+                      players_left=true
+                      echo "No players remain on slot ${{ inputs.server_slot }}; allowing the transfer connection to settle."
+                      break
+                    fi
+                    sleep 3
+                    transfer_wait_elapsed="$((transfer_wait_elapsed + 3))"
+                  done
+
+                  if [ "$players_left" != true ]; then
+                    echo "::warning::Could not confirm that all players left slot ${{ inputs.server_slot }} within 90 seconds."
+                    echo "Keeping the old server and Playit tunnel alive instead of forcing a disconnect."
+                    tail -n 80 "$GITHUB_WORKSPACE/server/logs/latest.log" 2>/dev/null || true
+                    exit 1
+                  fi
+
+                  TRANSFER_GRACE_SECONDS=20
+                  echo "Waiting ${TRANSFER_GRACE_SECONDS}s before shutting down slot ${{ inputs.server_slot }}."
+                  sleep "$TRANSFER_GRACE_SECONDS"
+
+                  # Stop Minecraft cleanly first. Keep Playit alive until the
+                  # process has actually exited so the old relay is not torn down
+                  # while the transfer is still settling.
+                  echo "Stopping old Minecraft server after transfer grace period."
+                  send_command "save-all flush"
+                  sleep 3
+                  send_command "stop"
+
+                  STOP_DEADLINE="$(( $(date +%s) + 30 ))"
+                  while kill -0 "$SERVER_PID" 2>/dev/null && [ "$(date +%s)" -lt "$STOP_DEADLINE" ]; do
+                    sleep 1
+                  done
+
+                  if kill -0 "$SERVER_PID" 2>/dev/null; then
+                    echo "::error::Old Minecraft server did not stop cleanly after transfer; leaving Playit available."
+                    exit 1
+                  fi
+
+                  cleanup_playit
+                  wait "$SERVER_PID" 2>/dev/null || true
+                  SERVER_PID=""
+                  exit 0
+                  fi
+                fi
+                sleep 3
+              done
+
+              echo "::error::Next server slot did not become ready within ${HANDOFF_WAIT_SECONDS} seconds."
+              exit 1
+            fi
+            sleep 5
+          done
+          wait "$SERVER_PID" 2>/dev/null || true
+          exit 0

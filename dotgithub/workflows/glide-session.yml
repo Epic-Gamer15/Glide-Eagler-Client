@@ -1,0 +1,874 @@
+name: Glide Display Session
+
+on:
+  workflow_dispatch:
+    inputs:
+      minecraft_version:
+        description: Minecraft version
+        required: true
+        type: string
+      loader:
+        description: Loader
+        required: true
+        type: string
+      xmx_gb:
+        description: Maximum JVM heap in GB
+        required: true
+        type: number
+      render_preset:
+        description: Render preset for window size
+        required: true
+        default: balanced
+        type: choice
+        options:
+          - tiny
+          - low
+          - balanced
+          - high
+          - ultra
+          - custom
+      render_width:
+        description: Custom render width (used when render_preset=custom)
+        required: false
+        default: 1280
+        type: number
+      render_height:
+        description: Custom render height (used when render_preset=custom)
+        required: false
+        default: 720
+        type: number
+      runner_label:
+        description: Actions runner label; use a GPU-capable larger or self-hosted runner when available
+        required: true
+        default: ubuntu-latest
+        type: string
+      auth_mode:
+        description: Authentication mode
+        required: true
+        default: offline
+        type: choice
+        options:
+          - offline
+          - microsoft
+      offline_username:
+        description: Username for Offline / Eagler mode
+        required: false
+        default: GlidePlayer
+        type: string
+      skin_model:
+        description: Skin model for skins/*.png (Microsoft mode)
+        required: true
+        default: classic
+        type: choice
+        options:
+          - classic
+          - slim
+
+permissions:
+  contents: write
+
+jobs:
+  session:
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 360
+    steps:
+      - name: Checkout Glide repository
+        uses: actions/checkout@v4
+
+      - name: Inspect runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=runner
+          echo CPU_COUNT=$(nproc)
+          free -h
+          df -h /
+          echo REQUESTED_VERSION=${{ inputs.minecraft_version }}
+          echo REQUESTED_LOADER=${{ inputs.loader }}
+          echo REQUESTED_XMX_GB=${{ inputs.xmx_gb }}
+          echo REQUESTED_RUNNER=${{ inputs.runner_label }}
+          echo RUNNER_NAME=$RUNNER_NAME
+          echo RUNNER_ARCH=$RUNNER_ARCH
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Client/target
+          key: ${{ runner.os }}-glide-cargo-${{ hashFiles('Client/Cargo.lock', 'Client/glide-gfx/src/**', 'Client/glide-gl-bridge/src/**', 'Client/glide-gfx/Cargo.toml', 'Client/glide-gl-bridge/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-glide-cargo-
+
+      - name: Install graphics build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=gfx-deps
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libx11-dev
+          pkg-config --modversion x11
+
+      - name: Build Glide graphics bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=gfx-build
+          bridge_path="$GITHUB_WORKSPACE/Client/target/release/libglide_gl_bridge.so"
+          if [ -f "$bridge_path" ]; then
+            echo "GLIDE_GL_BRIDGE=cache-hit"
+            echo "GLIDE_GL_BRIDGE_PATH=$bridge_path"
+            exit 0
+          fi
+          cargo build --release --features vulkan --manifest-path Client/glide-gl-bridge/Cargo.toml
+          test -f "$bridge_path"
+          echo "GLIDE_GL_BRIDGE=ready"
+      - name: Probe accelerated graphics backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=gfx-probe
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers vulkan-tools
+          cargo run --release --features vulkan --manifest-path Client/glide-gfx/Cargo.toml --bin gfx_probe || true
+          vulkaninfo --summary 2>/dev/null | head -n 80 || true
+          echo "GLIDE_VULKAN_DEVICES_BEGIN"
+          vulkaninfo --summary 2>/dev/null | grep -E 'deviceName|deviceType|driverName|driverInfo' || true
+          echo "GLIDE_VULKAN_DEVICES_END"
+          if vulkaninfo --summary 2>/dev/null | grep -qiE 'deviceType.*(DISCRETE_GPU|INTEGRATED_GPU)'; then
+            echo "GLIDE_VULKAN_HARDWARE_GPU=true"
+          else
+            echo "GLIDE_VULKAN_HARDWARE_GPU=false"
+          fi
+          if command -v nvidia-smi >/dev/null 2>&1; then
+            echo "GLIDE_NVIDIA_PRESENT=true"
+            nvidia-smi --query-gpu=name,driver_version --format=csv,noheader || true
+          else
+            echo "GLIDE_NVIDIA_PRESENT=false"
+          fi
+
+      - name: Install display prototype
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=display-install
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg xserver-xorg-core xserver-xorg-video-dummy xvfb dwm suckless-tools stterm curl jq x11-utils pulseaudio libgl1-mesa-dri libglx-mesa0 libgl1 mesa-utils x11-xserver-utils nginx
+
+      - name: Install cloudflared
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=tunnel-install
+          curl --fail --silent --show-error --location https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+          /tmp/cloudflared --version
+
+      - name: Start virtual desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=display-start
+          export DISPLAY=:99
+
+          # Prefer a real DRM device when the runner exposes one. The old dummy
+          # Xorg device always forced Mesa llvmpipe, which made Minecraft render
+          # entirely on the CPU even when a usable GPU was available.
+          if compgen -G "/dev/dri/card*" >/dev/null && compgen -G "/dev/dri/renderD*" >/dev/null; then
+            # Prefer the first DRM device exposed by the runner and log all devices.
+            GPU_CARD="$(ls -1 /dev/dri/card* | head -n 1)"
+            GPU_RENDER="$(ls -1 /dev/dri/renderD* | head -n 1)"
+            echo "GLIDE_DISPLAY_GPU=true"
+            echo "GLIDE_DRM_CARD=$GPU_CARD"
+            echo "GLIDE_DRM_RENDER=$GPU_RENDER"
+
+            cat >/tmp/glide-xorg.conf <<'XORGCONF'
+          Section "ServerLayout"
+              Identifier "GlideLayout"
+              Screen 0 "GlideScreen"
+          EndSection
+
+          Section "Device"
+              Identifier "GlideDevice"
+              Driver "modesetting"
+              Option "AccelMethod" "glamor"
+              Option "DRI" "3"
+          EndSection
+
+          Section "Monitor"
+              Identifier "GlideMonitor"
+              HorizSync 28.0-80.0
+              VertRefresh 48.0-75.0
+              Modeline "854x480" 37.00 854 888 968 1082 480 483 493 505 -HSync +VSync
+          EndSection
+
+          Section "Screen"
+              Identifier "GlideScreen"
+              Device "GlideDevice"
+              Monitor "GlideMonitor"
+              DefaultDepth 24
+              SubSection "Display"
+                  Depth 24
+                  Modes "854x480"
+                  Virtual 854 480
+              EndSubSection
+          EndSection
+          XORGCONF
+            DISPLAY_SERVER_NAME="xorg-modesetting"
+          else
+            echo "GLIDE_DISPLAY_GPU=false"
+            echo "No DRM GPU device exposed; using Xvfb software fallback."
+            DISPLAY_SERVER_NAME="xvfb"
+            Xvfb "$DISPLAY" -screen 0 854x480x24 -ac +extension GLX +extension RANDR >/tmp/glide-xorg.log 2>&1 &
+          fi
+
+          if [ "$DISPLAY_SERVER_NAME" = "xvfb" ]; then
+            XORG_PID=$!
+          else
+            Xorg "$DISPLAY" -config /tmp/glide-xorg.conf -noreset >/tmp/glide-xorg.log 2>&1 &
+            XORG_PID=$!
+          fi
+
+          for i in $(seq 1 30); do
+            if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then break; fi
+            if ! kill -0 "$XORG_PID" 2>/dev/null; then
+              cat /tmp/glide-xorg.log
+              exit 1
+            fi
+            sleep 1
+          done
+          xdpyinfo -display "$DISPLAY" >/dev/null
+          echo "DISPLAY_SERVER=$DISPLAY_SERVER_NAME"
+          echo "DISPLAY_MODE=854x480 DEPTH=24 BPP=32"
+          echo "DRM_DEVICES:"
+          ls -l /dev/dri 2>/dev/null || true
+          if command -v nvidia-smi >/dev/null 2>&1; then
+            nvidia-smi --query-gpu=index,name,memory.total,memory.used,utilization.gpu --format=csv,noheader || true
+          fi
+          command -v xrandr
+          xrandr --display "$DISPLAY" --query
+          xrandr --display "$DISPLAY" --listactivemonitors || true
+          xdpyinfo -display "$DISPLAY" | grep -E 'RANDR|GLX' || true
+
+          # Disable X11 pointer acceleration so raw mouse motion reaches
+          # Minecraft without an extra acceleration curve or transformation.
+          xset -display "$DISPLAY" m 0 0 || true
+
+          # Use dwm as the streamed desktop window manager. It has a much
+          # smaller runtime footprint than Fluxbox, minimizing compositor/WM
+          # overhead and keeping the input path simple.
+          #
+          # dwm is intentionally launched without a terminal or extra desktop
+          # components. st/stterm remains installed for manual debugging.
+          # The streamed session contains only the Minecraft window.
+          dwm >/tmp/glide-dwm.log 2>&1 &
+          DWM_PID=$!
+          sleep 1
+          if ! kill -0 "$DWM_PID" 2>/dev/null; then
+            cat /tmp/glide-dwm.log || true
+            exit 1
+          fi
+          echo "GLIDE_WINDOW_MANAGER=dwm"
+          echo "GLIDE_TERMINAL=st"
+
+          echo "DISPLAY_READY=true"
+
+      - name: Install Selkies
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=selkies-install
+          SELKIES_VERSION="$(curl -fsSL "https://api.github.com/repos/selkies-project/selkies/releases/latest" | jq -r '.tag_name')"
+          test -n "$SELKIES_VERSION"
+          echo "SELKIES_VERSION=$SELKIES_VERSION"
+          DISTRO="$(. /etc/os-release; printf '%s%s' "$ID" "$VERSION_ID")"
+          ARCH="$(dpkg --print-architecture)"
+          PKG="selkies-$SELKIES_VERSION-$DISTRO-$ARCH.deb"
+          curl --fail --location --retry 4 --retry-all-errors --connect-timeout 15 --max-time 180 --output "/tmp/$PKG" "https://github.com/selkies-project/selkies/releases/download/$SELKIES_VERSION/$PKG"
+          sudo apt-get install -y "/tmp/$PKG"
+          command -v selkies
+          selkies --help >/tmp/glide-selkies-help.txt
+          GLIDE_SELKIES_PASSWORD="$(python3 - <<'PY'
+          import secrets
+          print(secrets.token_urlsafe(18))
+          PY
+          )"
+          echo "GLIDE_SELKIES_PASSWORD=$GLIDE_SELKIES_PASSWORD" >> "$GITHUB_ENV"
+          echo "SELKIES_INSTALLED=true"
+
+      - name: Start Selkies streaming server
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=selkies-start
+          export DISPLAY=:99
+          export XDG_RUNTIME_DIR=/tmp/glide-runtime
+          export PULSE_RUNTIME_PATH="$XDG_RUNTIME_DIR/pulse"
+          export PULSE_SERVER="unix:$PULSE_RUNTIME_PATH/native"
+          mkdir -p "$XDG_RUNTIME_DIR" "$PULSE_RUNTIME_PATH"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          # Run PulseAudio in the runner's user session explicitly. GitHub-hosted
+          # runners can inherit a stale/broken PA environment from setup steps.
+          pulseaudio --kill >/tmp/glide-pulseaudio-kill.log 2>&1 || true
+          rm -f "$PULSE_RUNTIME_PATH/native"
+          # Do not export PULSE_SERVER while starting the daemon: otherwise
+          # PulseAudio treats the configured socket as an existing server and
+          # refuses to spawn. Export it only after the daemon is up.
+          unset PULSE_SERVER
+          pulseaudio --start --daemonize=yes --system=false --exit-idle-time=-1 \
+            --log-target=file:/tmp/glide-pulseaudio.log
+          export PULSE_SERVER="unix:$PULSE_RUNTIME_PATH/native"
+          {
+            echo "GLIDE_XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+            echo "GLIDE_PULSE_RUNTIME_PATH=$PULSE_RUNTIME_PATH"
+            echo "GLIDE_PULSE_SERVER=$PULSE_SERVER"
+          } >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            if [ -S "$PULSE_RUNTIME_PATH/native" ]; then break; fi
+            sleep 1
+          done
+          if [ ! -S "$PULSE_RUNTIME_PATH/native" ]; then
+            cat /tmp/glide-pulseaudio.log || true
+            pulseaudio --check || true
+            exit 1
+          fi
+          pactl info | head -n 20
+          echo "PULSEAUDIO_READY=true"
+          pactl load-module module-virtual-sink sink_name=glide_game_sink sink_properties=device.description=GlideGame >/tmp/glide-pulse-sink-module.txt || true
+          pactl set-default-sink glide_game_sink || true
+          pactl set-default-source glide_game_sink.monitor || true
+          pactl set-sink-volume glide_game_sink 100% || true
+          pactl suspend-sink glide_game_sink false || true
+          pactl list short sinks
+          pactl list short sources
+          echo "GLIDE_PULSE_SINK=glide_game_sink"
+          echo "GLIDE_PULSE_SOURCE=glide_game_sink.monitor"
+          # h264enc is hardware-first in current Selkies/pixelflux builds:
+          # NVIDIA uses NVENC and Intel/AMD use VA-API when available, with a software fallback.
+          selkies --public --port=8080 --mode=websockets --enable-https=false --basic-auth-user=glide --basic-auth-password="$GLIDE_SELKIES_PASSWORD" --encoder=h264enc --enable-resize=false --raw-pointer-motion=true --video-framerate=60 --video-bitrate=8000 --congestion-control >/tmp/glide-selkies.log 2>&1 &
+          SELKIES_PID=$!
+          echo "$SELKIES_PID" >/tmp/glide-selkies.pid
+          for i in $(seq 1 60); do
+            if curl --fail --silent --show-error -u "glide:$GLIDE_SELKIES_PASSWORD" http://127.0.0.1:8080/ >/dev/null 2>&1; then break; fi
+            if ! kill -0 "$SELKIES_PID" 2>/dev/null; then cat /tmp/glide-selkies.log; exit 1; fi
+            sleep 1
+          done
+          curl --fail --silent --show-error -u "glide:$GLIDE_SELKIES_PASSWORD" http://127.0.0.1:8080/ >/dev/null
+          echo "SELKIES_READY=true"
+          echo "SELKIES_LISTEN=127.0.0.1:8080"
+
+
+      - name: Start public test tunnel
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=tunnel
+          # GitHub Actions normally cleans up background processes when a step ends.
+          # Clear the runner tracking marker so the tunnel survives into the
+          # Minecraft launch/session steps.
+          RUNNER_TRACKING_ID="" /tmp/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080 >/tmp/glide-cloudflared.log 2>&1 &
+          TUNNEL_PID=$!
+
+          URL=""
+          for i in $(seq 1 90); do
+            URL=$(grep -Eo 'https://[-a-z0-9]+[.]trycloudflare[.]com' /tmp/glide-cloudflared.log | head -n 1 || true)
+            if [ -n "$URL" ]; then break; fi
+            if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+              cat /tmp/glide-cloudflared.log
+              exit 1
+            fi
+            sleep 1
+          done
+          test -n "$URL"
+
+          echo "$URL" >/tmp/glide-session-url.txt
+          echo "GLIDE_TUNNEL_URL=$URL"
+          echo "GLIDE_SELKIES_URL=$URL"
+          echo "GLIDE_SELKIES_USER=glide"
+          echo "GLIDE_SELKIES_PASSWORD=$GLIDE_SELKIES_PASSWORD"
+          echo "GLIDE_STREAMING_BACKEND=selkies"
+          echo "GLIDE_TEST_WARNING=This temporary test URL is public and expires with the runner."
+          echo "GLIDE_STAGE=tunnel-url-ready"
+
+          READY=0
+          TUNNEL_HOST="${URL#https://}"
+          for i in $(seq 1 60); do
+            # Check both DNS and the actual authenticated HTTPS endpoint. This
+            # prevents a stale cloudflared URL from being advertised as ready.
+            if getent ahosts "$TUNNEL_HOST" >/dev/null 2>&1 && \
+               curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+                 -u "glide:$GLIDE_SELKIES_PASSWORD" "$URL/" >/dev/null 2>&1; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+              echo "cloudflared exited while waiting for public reachability."
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$READY" -ne 1 ]; then
+            echo "Public tunnel did not become reachable."
+            tail -n 100 /tmp/glide-cloudflared.log || true
+            exit 1
+          fi
+
+          echo "GLIDE_STAGE=tunnel-ready"
+          echo "GLIDE_READY=true"
+
+      - name: Install Java 8 for legacy Minecraft
+        if: startsWith(inputs.minecraft_version, '1.12.')
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Restore saved Minecraft state from repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.minecraft_version }}"
+          LOADER="${{ inputs.loader }}"
+          WORLD_ROOT="$GITHUB_WORKSPACE/Client/$VERSION/worlds"
+          RESOURCEPACK_ROOT="$GITHUB_WORKSPACE/Client/$VERSION/resourcepacks"
+          LEGACY_SAVE_ROOT="$GITHUB_WORKSPACE/game/saving"
+          mkdir -p /home/runner/glide-minecraft/saves /home/runner/glide-minecraft/resourcepacks
+
+          restored_worlds=0
+          if [ -d "$WORLD_ROOT" ]; then
+            shopt -s dotglob
+            for world in "$WORLD_ROOT"/*; do
+              [ -d "$world" ] || continue
+              name="$(basename "$world")"
+              rm -rf "/home/runner/glide-minecraft/saves/$name"
+              cp -a "$world" "/home/runner/glide-minecraft/saves/$name"
+              echo "GLIDE_WORLD_RESTORED=$name"
+              restored_worlds=$((restored_worlds + 1))
+            done
+          fi
+          echo "GLIDE_WORLD_COUNT=$restored_worlds"
+
+          if [ -d "$RESOURCEPACK_ROOT" ]; then
+            shopt -s dotglob
+            for pack in "$RESOURCEPACK_ROOT"/*; do
+              [ -e "$pack" ] || continue
+              name="$(basename "$pack")"
+              rm -rf "/home/runner/glide-minecraft/resourcepacks/$name"
+              cp -a "$pack" "/home/runner/glide-minecraft/resourcepacks/$name"
+              echo "GLIDE_RESOURCEPACK_RESTORED=$name"
+            done
+          fi
+
+          if [ "$restored_worlds" -eq 0 ] && [ -d "$LEGACY_SAVE_ROOT" ]; then
+            LATEST_SAVE="$(find "$LEGACY_SAVE_ROOT" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1 || true)"
+            if [ -n "$LATEST_SAVE" ] && [ -d "$LATEST_SAVE/saves" ]; then
+              cp -a "$LATEST_SAVE/saves/." /home/runner/glide-minecraft/saves/
+              echo "GLIDE_LEGACY_WORLDS_MIGRATED=$LATEST_SAVE"
+            fi
+          fi
+      - name: Install Java and Minecraft launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=minecraft-install
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends openjdk-17-jre-headless openjdk-21-jre-headless python3-pip
+          sudo apt-get install -y --no-install-recommends unzip
+          python3 -m pip install --user --break-system-packages "minecraft-launcher-lib==8.0"
+          mkdir -p /home/runner/glide-minecraft/mods
+          mkdir -p /home/runner/glide-minecraft/datapacks
+          shopt -s nullglob
+          MOD_SOURCE="$GITHUB_WORKSPACE/Client/mods/${{ inputs.minecraft_version }}/${{ inputs.loader }}"
+          DATAPACK_SOURCE="$GITHUB_WORKSPACE/Client/${{ inputs.minecraft_version }}/datapacks/${{ inputs.loader }}"
+
+          # Datapacks are world-scoped in Java Edition. Keep a loader-specific
+          # staging directory, then copy valid packs into every existing world.
+          datapack_count=0
+          if [ -d "$DATAPACK_SOURCE" ]; then
+            for datapack in "$DATAPACK_SOURCE"/*; do
+              [ -e "$datapack" ] || continue
+              case "$datapack" in
+                *.zip)
+                  if unzip -tqq "$datapack" >/dev/null 2>&1; then
+                    cp -f "$datapack" /home/runner/glide-minecraft/datapacks/
+                    datapack_count=$((datapack_count + 1))
+                    echo "GLIDE_DATAPACK=$(basename "$datapack")"
+                  else
+                    echo "Invalid datapack ZIP: $datapack"
+                    exit 1
+                  fi
+                  ;;
+                *)
+                  if [ -d "$datapack" ] && [ -f "$datapack/pack.mcmeta" ]; then
+                    rm -rf "/home/runner/glide-minecraft/datapacks/$(basename "$datapack")"
+                    cp -a "$datapack" "/home/runner/glide-minecraft/datapacks/"
+                    datapack_count=$((datapack_count + 1))
+                    echo "GLIDE_DATAPACK=$(basename "$datapack")/"
+                  else
+                    echo "Ignoring non-datapack entry: $datapack"
+                  fi
+                  ;;
+              esac
+            done
+          fi
+          echo "GLIDE_DATAPACK_COUNT=$datapack_count"
+
+          if [ "$datapack_count" -gt 0 ] && [ -d /home/runner/glide-minecraft/saves ]; then
+            for world in /home/runner/glide-minecraft/saves/*; do
+              [ -d "$world" ] || continue
+              mkdir -p "$world/datapacks"
+              cp -af /home/runner/glide-minecraft/datapacks/. "$world/datapacks/"
+              echo "GLIDE_DATAPACK_WORLD=$(basename "$world")"
+            done
+          fi
+
+          if [ -d "$MOD_SOURCE" ]; then
+            loader_mods=("$MOD_SOURCE"/*.jar)
+            if [ ${#loader_mods[@]} -gt 0 ]; then
+              cp -f -- "${loader_mods[@]}" /home/runner/glide-minecraft/mods/
+            fi
+            echo "GLIDE_MOD_COUNT=${#loader_mods[@]}"
+            printf 'GLIDE_MOD_FILE=%s\\n' "${loader_mods[@]##*/}"
+
+            # ZIP archives in mods/<loader>/ are treated as modpacks.
+            # Support common CurseForge/Modrinth-style packs, including
+            # overrides/, while retaining support for loose JAR mods.
+            modpacks=("$MOD_SOURCE"/*.zip)
+            mrpacks=("$MOD_SOURCE"/*.mrpack)
+            if [ ${#modpacks[@]} -gt 0 ] || [ ${#mrpacks[@]} -gt 0 ]; then
+              sudo apt-get install -y --no-install-recommends unzip python3
+              for pack in "${modpacks[@]}"; do
+                pack_name="$(basename "$pack")"
+                pack_root="/tmp/glide-modpack-${pack_name%.zip}"
+                rm -rf "$pack_root"; mkdir -p "$pack_root"
+                echo "GLIDE_MODPACK=$pack_name"
+                unzip -q -o "$pack" -d "$pack_root"
+                if [ -d "$pack_root/overrides" ]; then cp -a "$pack_root/overrides/." /home/runner/glide-minecraft/; fi
+                for pack_dir in mods config resourcepacks shaderpacks scripts datapacks; do
+                  if [ -d "$pack_root/$pack_dir" ]; then
+                    mkdir -p "/home/runner/glide-minecraft/$pack_dir"
+                    cp -a "$pack_root/$pack_dir/." "/home/runner/glide-minecraft/$pack_dir/"
+                  fi
+                done
+                rm -rf "$pack_root"
+              done
+              for pack in "${mrpacks[@]}"; do
+                pack_name="$(basename "$pack")"
+                pack_root="/tmp/glide-mrpack-${pack_name%.mrpack}"
+                rm -rf "$pack_root"; mkdir -p "$pack_root"
+                unzip -q -o "$pack" -d "$pack_root"
+                echo "GLIDE_MRPACK=$pack_name"
+                python3 - "$pack_root/modrinth.index.json" "/home/runner/glide-minecraft" <<'PY'
+          import hashlib, json, os, sys, urllib.request
+          idx, dest = sys.argv[1:]
+          with open(idx, encoding="utf-8") as f: data=json.load(f)
+          if data.get("formatVersion") != 1:
+              raise SystemExit("Unsupported Modrinth pack format")
+          for f in data.get("files", []):
+              rel=f["path"].replace("\\","/")
+              parts=rel.split("/")
+              if any(x in ("..","") for x in parts):
+                  raise SystemExit(f"Unsafe modpack path: {rel}")
+              if not f.get("downloads"):
+                  if f.get("env",{}).get("client") == "unsupported":
+                      continue
+                  raise SystemExit(f"No download URL for required file: {rel}")
+              out=os.path.join(dest, rel)
+              os.makedirs(os.path.dirname(out), exist_ok=True)
+              ok=False
+              for url in f["downloads"]:
+                  try:
+                      with urllib.request.urlopen(url, timeout=60) as r, open(out+".tmp","wb") as w:
+                          w.write(r.read())
+                      h=hashlib.sha1(open(out+".tmp","rb").read()).hexdigest()
+                      if h != f.get("hashes",{}).get("sha1"):
+                          os.unlink(out+".tmp"); continue
+                      os.replace(out+".tmp", out); ok=True; break
+                  except Exception:
+                      try: os.unlink(out+".tmp")
+                      except FileNotFoundError: pass
+              if not ok: raise SystemExit(f"Failed to download/verify modpack file: {rel}")
+          PY
+                rm -rf "$pack_root"
+              done
+            fi
+          else
+            echo "No loader-specific mods directory: $MOD_SOURCE"
+            echo "GLIDE_MOD_COUNT=0"
+          fi
+          java -version
+          python3 - <<'PY'
+          import minecraft_launcher_lib
+          print("MINECRAFT_LAUNCHER_LIB_OK=true")
+          PY
+
+      - name: Build version-agnostic runtime discovery agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=runtime-agent-build
+          chmod +x "$GITHUB_WORKSPACE/Client/glide-runtime-agent/build.sh"
+          "$GITHUB_WORKSPACE/Client/glide-runtime-agent/build.sh"
+          test -s "$GITHUB_WORKSPACE/Client/glide-runtime-agent/build/glide-runtime-agent.jar"
+          echo "GLIDE_RUNTIME_AGENT=$GITHUB_WORKSPACE/Client/glide-runtime-agent/build/glide-runtime-agent.jar" >> "$GITHUB_ENV"
+          echo "GLIDE_RUNTIME_PROBE=/tmp/glide-runtime.json" >> "$GITHUB_ENV"
+          echo "GLIDE_RUNTIME_PROBE=/tmp/glide-runtime.json" >> "$GITHUB_ENV"
+          echo "GLIDE_RUNTIME_AGENT_READY=true"
+
+      - name: Launch Minecraft client
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DISPLAY=:99
+          export HOME=/home/runner
+          export GLIDE_MINECRAFT_VERSION="${{ inputs.minecraft_version }}"
+          export GLIDE_MINECRAFT_XMX="${{ inputs.xmx_gb }}G"
+          export GLIDE_MINECRAFT_LOADER="${{ inputs.loader }}"
+          export GLIDE_RESOLUTION_PRESET="${{ inputs.render_preset }}"
+          export GLIDE_RENDER_WIDTH="${{ inputs.render_width }}"
+          export GLIDE_RENDER_HEIGHT="${{ inputs.render_height }}"
+          export GLIDE_AUTH_MODE="${{ inputs.auth_mode }}"
+          export GLIDE_OFFLINE_USERNAME="${{ inputs.offline_username }}"
+          export GLIDE_SKIN_MODEL="${{ inputs.skin_model }}"
+          export XDG_RUNTIME_DIR="${GLIDE_XDG_RUNTIME_DIR:-/tmp/glide-runtime}"
+          export PULSE_RUNTIME_PATH="${GLIDE_PULSE_RUNTIME_PATH:-$XDG_RUNTIME_DIR/pulse}"
+          export PULSE_SERVER="${GLIDE_PULSE_SERVER:-unix:$PULSE_RUNTIME_PATH/native}"
+          export PULSE_LATENCY_MSEC="60"
+          export PULSE_SUSPEND_ON_IDLE="no"
+          export PULSE_SINK="${GLIDE_PULSE_SINK:-glide_game_sink}"
+          export PULSE_SOURCE="${GLIDE_PULSE_SOURCE:-glide_game_sink.monitor}"
+          export SDL_AUDIODRIVER="pulseaudio"
+          export AUDIODRIVER="pulseaudio"
+          export ALSOFT_DRIVERS="pulse"
+          echo "GLIDE_AUDIO_SERVER=$PULSE_SERVER"
+          echo "GLIDE_AUDIO_SINK=$PULSE_SINK"
+          # Select Java for the requested Minecraft version.
+          if [[ "$GLIDE_MINECRAFT_VERSION" == 1.12.* ]]; then
+            if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+              export GLIDE_JAVA8_HOME="$JAVA_HOME"
+            elif [ -n "${JAVA_HOME_8_X64:-}" ] && [ -x "$JAVA_HOME_8_X64/bin/java" ]; then
+              export GLIDE_JAVA8_HOME="$JAVA_HOME_8_X64"
+            else
+              echo "Java 8 was installed but no usable JAVA_HOME was found."
+              exit 1
+            fi
+            export JAVA_HOME="$GLIDE_JAVA8_HOME"
+          elif [[ "$GLIDE_MINECRAFT_VERSION" =~ ^1\.(18|19|20)(\.|$) ]] && [[ "$GLIDE_MINECRAFT_VERSION" != 1.20.5* ]] && [[ "$GLIDE_MINECRAFT_VERSION" != 1.20.6* ]]; then
+            export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+          else
+            export JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64"
+          fi
+          export PATH="$JAVA_HOME/bin:$PATH"
+          echo "GLIDE_JAVA_HOME=$JAVA_HOME"
+          java -version
+          # Do not force llvmpipe: use a hardware Mesa/NVIDIA driver when the
+          # runner exposes one. Software remains an explicit fallback.
+          unset LIBGL_ALWAYS_SOFTWARE || true
+          unset MESA_LOADER_DRIVER_OVERRIDE || true
+          export vblank_mode=0
+          # Keep the native OpenGL driver from queueing multiple frames when
+          # the bridge is not using the Vulkan path. This is primarily a latency
+          # safeguard; Vulkan uses its own frame-in-flight control.
+          export __GL_MaxFramesAllowed=1
+          export GLIDE_GPU_MODE=auto
+          export GLIDE_CAPTURE_MODE=auto
+          # Favor low-latency frame delivery over deep buffering. The Vulkan
+          # backend keeps a shallow frame/swapchain queue for interactive input.
+          export GLIDE_LOW_LATENCY=1
+          case "$GLIDE_AUTH_MODE" in
+            offline)
+              echo "GLIDE_AUTH_MODE=offline"
+              echo "Offline / Eagler mode selected. This is intended only for servers configured to accept offline authentication."
+              ;;
+            microsoft)
+              if [ -z "${{ secrets.GLIDE_MICROSOFT_CLIENT_ID }}" ]; then
+                echo "Missing repository secret GLIDE_MICROSOFT_CLIENT_ID."
+                echo "Add your Microsoft public-client application ID as this repository secret."
+                exit 1
+              fi
+              export GLIDE_MICROSOFT_CLIENT_ID="${{ secrets.GLIDE_MICROSOFT_CLIENT_ID }}"
+              echo "GLIDE_AUTH_MODE=microsoft"
+              ;;
+            *)
+              echo "Unsupported GLIDE_AUTH_MODE=$GLIDE_AUTH_MODE (use offline or microsoft)"
+              exit 1
+              ;;
+          esac
+          # Modern Minecraft defaults to Glide's Vulkan renderer when a
+          # hardware Vulkan device is available. Legacy versions keep native
+          # OpenGL as the safer default because their rendering paths rely more
+          # heavily on fixed-function/legacy GL behavior.
+          #
+          # GLIDE_RENDERER=opengl is an explicit compatibility override.
+          # GLIDE_RENDERER=vulkan requests Vulkan on a hardware-capable runner.
+          # "auto" selects Vulkan for modern versions and OpenGL for legacy ones.
+          GLIDE_RENDERER="${GLIDE_RENDERER:-auto}"
+          case "$GLIDE_RENDERER" in
+            opengl)
+              export GLIDE_VULKAN_BRIDGE=0
+              echo "GLIDE_RENDERER=opengl"
+              ;;
+            vulkan)
+              if [ "${GLIDE_VULKAN_HARDWARE_GPU:-false}" = "true" ]; then
+                export GLIDE_VULKAN_BRIDGE=1
+                echo "GLIDE_RENDERER=vulkan"
+              else
+                echo "GLIDE_RENDERER=vulkan requested but no hardware Vulkan GPU is available"
+                exit 1
+              fi
+              ;;
+            auto)
+              if [ "${GLIDE_VULKAN_HARDWARE_GPU:-false}" = "true" ] && \
+                 [[ "$GLIDE_MINECRAFT_VERSION" =~ ^1\.(17|18|19|20|21|22|23|24|25|26)(\.|$) ]]; then
+                export GLIDE_VULKAN_BRIDGE=1
+                echo "GLIDE_RENDERER=vulkan-default"
+              else
+                export GLIDE_VULKAN_BRIDGE=0
+                echo "GLIDE_RENDERER=opengl-default"
+              fi
+              ;;
+            *)
+              echo "Unsupported GLIDE_RENDERER=$GLIDE_RENDERER (use auto, vulkan, or opengl)"
+              exit 1
+              ;;
+          esac
+
+          echo "GLIDE_STAGE=encoder-probe"
+          ffmpeg -hide_banner -encoders 2>/dev/null | grep -E 'h264_(nvenc|vaapi|amf)|hevc_(nvenc|vaapi|amf)|av1_(nvenc|vaapi|amf)' || true
+          if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'h264_nvenc'; then
+            echo "GLIDE_HARDWARE_ENCODER=NVIDIA_NVENC"
+          elif ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'h264_vaapi'; then
+            echo "GLIDE_HARDWARE_ENCODER=VAAPI"
+          elif ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'h264_amf'; then
+            echo "GLIDE_HARDWARE_ENCODER=AMD_AMF"
+          else
+            echo "GLIDE_HARDWARE_ENCODER=NONE"
+          fi
+
+          echo GLIDE_STAGE=minecraft-launch
+          echo "MINECRAFT_VERSION=$GLIDE_MINECRAFT_VERSION"
+          echo "MINECRAFT_LOADER=${{ inputs.loader }}"
+          echo "MINECRAFT_XMX=$GLIDE_MINECRAFT_XMX"
+
+          loader_input="${{ inputs.loader }}"
+          loader_lower="${loader_input,,}"
+          case "$loader_lower" in
+            vanilla|fabric|forge|legacy-fabric|legacy-forge|quilt|neoforge) ;;
+            *)
+              echo "Unsupported loader: ${{ inputs.loader }}"
+              echo "Supported loaders: vanilla, fabric, forge, legacy-fabric, legacy-forge, quilt, neoforge"
+              exit 1
+              ;;
+          esac
+          export GLIDE_MINECRAFT_LOADER="$loader_lower"
+
+          echo "GLIDE_STAGE=opengl-check"
+          glxinfo -display "$DISPLAY" -B || true
+
+          echo "GLIDE_STAGE=gl-bridge-preload"
+          BRIDGE="$GITHUB_WORKSPACE/Client/target/release/libglide_gl_bridge.so"
+          if [ ! -f "$BRIDGE" ]; then
+            echo "Missing Glide GL bridge: $BRIDGE"
+            exit 1
+          fi
+          export LD_PRELOAD="$BRIDGE"
+          echo "GLIDE_GL_PRELOAD=$BRIDGE"
+          echo "GLIDE_GL_PRELOAD_ACTIVE=true"
+
+          python3 "$GITHUB_WORKSPACE/Client/scripts/glide_launch.py"
+
+      - name: Save world and settings to repo
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.minecraft_version }}"
+          LOADER="${{ inputs.loader }}"
+          WORLD_ROOT="$GITHUB_WORKSPACE/Client/$VERSION/worlds"
+          RESOURCEPACK_ROOT="$GITHUB_WORKSPACE/Client/$VERSION/resourcepacks"
+          MOD_ROOT="$GITHUB_WORKSPACE/Client/mods/$VERSION/$LOADER"
+          DATAPACK_ROOT="$GITHUB_WORKSPACE/Client/$VERSION/datapacks/$LOADER"
+          SETTINGS_ROOT="$GITHUB_WORKSPACE/Client/$VERSION/settings/$LOADER"
+          mkdir -p "$WORLD_ROOT" "$RESOURCEPACK_ROOT" "$MOD_ROOT" "$DATAPACK_ROOT" "$SETTINGS_ROOT"
+
+          if [ -d /home/runner/glide-minecraft/saves ]; then
+            for world in /home/runner/glide-minecraft/saves/*; do
+              [ -d "$world" ] || continue
+              name="$(basename "$world")"
+              rm -rf "$WORLD_ROOT/$name"
+              cp -a "$world" "$WORLD_ROOT/$name"
+              echo "GLIDE_WORLD_SAVED=$name"
+            done
+          fi
+
+          if [ -d /home/runner/glide-minecraft/resourcepacks ]; then
+            for pack in /home/runner/glide-minecraft/resourcepacks/*; do
+              [ -e "$pack" ] || continue
+              name="$(basename "$pack")"
+              rm -rf "$RESOURCEPACK_ROOT/$name"
+              cp -a "$pack" "$RESOURCEPACK_ROOT/$name"
+              echo "GLIDE_RESOURCEPACK_SAVED=$name"
+            done
+          fi
+
+          if [ -d /home/runner/glide-minecraft/mods ]; then
+            find "$MOD_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            for mod in /home/runner/glide-minecraft/mods/*; do
+              [ -f "$mod" ] || continue
+              cp -a "$mod" "$MOD_ROOT/$(basename "$mod")"
+              echo "GLIDE_MOD_SAVED=$(basename "$mod")"
+            done
+          fi
+
+          if [ -d /home/runner/glide-minecraft/datapacks ]; then
+            find "$DATAPACK_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            for pack in /home/runner/glide-minecraft/datapacks/*; do
+              [ -e "$pack" ] || continue
+              cp -a "$pack" "$DATAPACK_ROOT/$(basename "$pack")"
+            done
+          fi
+
+          for item in config shaderpacks options.txt optionsof.txt servers.dat launcher_profiles.json usercache.json server-resource-packs.json; do
+            src="/home/runner/glide-minecraft/$item"
+            if [ -e "$src" ]; then
+              rm -rf "$SETTINGS_ROOT/$item"
+              cp -a "$src" "$SETTINGS_ROOT/$item"
+            fi
+          done
+
+          git config user.name "Glide Save Bot"
+          git config user.email "glide-save-bot@users.noreply.github.com"
+          git add "Client/$VERSION" "Client/mods/$VERSION"
+          if git diff --cached --quiet; then
+            echo "GLIDE_SAVE_COMMIT=skipped"
+            exit 0
+          fi
+          git commit -m "Save Glide client state $VERSION $LOADER"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "GLIDE_SAVE_COMMIT=$VERSION-$LOADER"
+          echo "GLIDE_WORLD_PATH=$WORLD_ROOT"
+          echo "GLIDE_RESOURCEPACK_PATH=$RESOURCEPACK_ROOT"
+          echo "GLIDE_MOD_PATH=$MOD_ROOT"
+
+      - name: Keep Minecraft session alive
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo GLIDE_STAGE=running
+          echo "GLIDE_READY=true"
+          echo "Minecraft is running inside the Selkies display."
+          sleep 21600
+
+      - name: Upload display logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glide-display-logs
+          path: |
+            /tmp/glide-*.log
+            /tmp/glide-*.txt
+            /home/runner/glide-minecraft/crash-reports/*.txt
+            /home/runner/glide-minecraft/hs_err_pid*.log
+          if-no-files-found: ignore

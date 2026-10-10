@@ -1,0 +1,6 @@
+# Glide A/B public Minecraft tunnel endpoints
+# Each tunnel forwards to its runner's local 127.0.0.1:25565.
+A=
+B=
+
+for A and B put the tunnels and it will cycle between them 

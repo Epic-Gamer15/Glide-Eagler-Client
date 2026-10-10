@@ -1,0 +1,1140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Glide</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171b20;
+        --panel-2: #1d232a;
+        --line: #2b323b;
+        --text: #eef3f8;
+        --muted: #a7b0ba;
+        --ok: #d8f5d1;
+        --blue: #9ed7ff;
+        --button: #e6eef8;
+        --button-text: #10161d;
+        --warn: #f5d48a;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Arial, Helvetica, sans-serif;
+      }
+
+      .wrap {
+        max-width: 760px;
+        margin: 32px auto;
+        padding: 0 16px 40px;
+      }
+
+      .box {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 18px;
+        margin-bottom: 16px;
+      }
+
+      h1, h2, h3, p { margin-top: 0; }
+      h1 { font-size: 28px; margin-bottom: 8px; }
+      p { color: var(--muted); line-height: 1.5; }
+
+      .small {
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--blue);
+        display: inline-block;
+        margin-bottom: 10px;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+      }
+
+      label {
+        display: grid;
+        gap: 8px;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+
+      input, select, textarea, button {
+        font: inherit;
+      }
+
+      input, select, textarea {
+        width: 100%;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 11px 12px;
+      }
+
+      textarea {
+        min-height: 90px;
+        resize: vertical;
+      }
+
+      button {
+        background: var(--button);
+        color: var(--button-text);
+        border: 0;
+        border-radius: 8px;
+        padding: 11px 16px;
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      button.secondary {
+        background: #dfe9f5;
+      }
+
+      .button-row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 8px;
+      }
+
+      .hidden { display: none; }
+
+      .permission-list {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--text);
+      }
+
+      .permission-list li {
+        margin-bottom: 6px;
+        color: var(--muted);
+      }
+
+      .repo-card {
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        border-radius: 8px;
+        padding: 12px;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .repo-name {
+        font-weight: 700;
+      }
+
+      .repo-desc {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .muted { color: var(--muted); }
+      .warn { color: var(--warn); }
+      .ok { color: var(--ok); }
+
+      .progress-shell {
+        width: 100%;
+        height: 12px;
+        background: #101820;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        overflow: hidden;
+        margin: 10px 0 12px;
+      }
+
+      .progress-fill {
+        height: 100%;
+        width: 0;
+        background: linear-gradient(90deg, #9ed7ff, #d8f5d1);
+        border-radius: inherit;
+        transition: width 0.25s ease;
+      }
+
+      .status-box {
+        border: 1px solid var(--line);
+        background: #0d1218;
+        border-radius: 8px;
+        padding: 12px;
+        margin-top: 12px;
+      }
+
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin: 0;
+        background: #0d1218;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px;
+      }
+
+      @media (max-width: 640px) {
+        .repo-card {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="box">
+        <div class="small">Glide</div>
+        <h1>GitHub setup</h1>
+        <p>Pick a repo, confirm it is the Glide project, then choose a server or client setup.</p>
+      </div>
+
+      <div class="box">
+        <h2>1. Connect GitHub</h2>
+        <label>
+          GitHub token
+          <input id="tokenInput" type="password" placeholder="ghp_xxx or github_pat_xxx" />
+        </label>
+
+        <p>
+          Required permissions:<br>
+          <strong>repo</strong> for repo read access<br>
+          <strong>actions</strong> if you want to start or inspect workflow runs<br>
+          <strong>contents</strong> if the repo needs saved files or plugin files committed from the browser flow
+        </p>
+
+        <p class="muted">
+          This tool does not need admin access, org admin, or secret write access.
+          It should only be used to find the correct repo and build a config.
+        </p>
+
+        <div class="button-row">
+          <button id="checkGitHubBtn" type="button">Check GitHub</button>
+        </div>
+      </div>
+
+      <div id="repoPanel" class="box hidden">
+        <h2>2. Pick the Glide repo</h2>
+        <div id="repoList"></div>
+      </div>
+
+      <div id="modePanel" class="box hidden">
+        <h2>3. Start a server or client?</h2>
+        <div class="button-row">
+          <button id="serverModeBtn" class="secondary" type="button">Server</button>
+          <button id="clientModeBtn" type="button">Client</button>
+        </div>
+      </div>
+
+      <div id="settingsPanel" class="box hidden">
+        <h2 id="settingsTitle">4. Settings</h2>
+
+        <div class="row" id="commonRow">
+          <label>
+            Minecraft version
+            <input id="versionInput" type="text" value="1.21.4" placeholder="1.21.4 or 1.12.2" />
+          </label>
+
+          <label>
+            Max RAM (GB)
+            <input id="ramInput" type="number" min="1" max="64" value="8" />
+          </label>
+        </div>
+
+        <div id="serverSettings" class="hidden">
+          <div class="row">
+            <label>
+              Server name
+              <input id="serverNameInput" type="text" value="Glide Server" />
+            </label>
+
+            <label>
+              Server type
+              <select id="serverTypeInput">
+                <option value="fabric">Fabric</option>
+                <option value="purpur">Purpur</option>
+                <option value="paper">Paper</option>
+                <option value="forge">Forge</option>
+                <option value="quilt">Quilt</option>
+                <option value="vanilla">Vanilla</option>
+              </select>
+            </label>
+          </div>
+
+          <label>
+            Server description / MOTD
+            <textarea id="serverDescriptionInput">A Glide server running on GitHub Actions.</textarea>
+          </label>
+
+          <label>
+            Plugin list
+            <textarea id="pluginsInput">placeholderplugin
+example-plugin
+best-plugin</textarea>
+          </label>
+
+          <label>
+            Import plugin files
+            <input id="pluginFilesInput" type="file" multiple accept=".jar,.zip,.mrpack,.disabled" />
+          </label>
+
+          <div class="button-row">
+            <button id="addPluginsBtn" type="button">Add selected plugin files to repo</button>
+          </div>
+
+          <div id="pluginList" class="muted"></div>
+
+          <p class="muted">
+            These files are uploaded to the repo under the server plugin folder so the workflow can load them.
+          </p>
+
+          <div class="row">
+            <label>
+              Online mode
+              <select id="onlineModeInput">
+                <option value="true">Online</option>
+                <option value="false">Offline</option>
+              </select>
+            </label>
+
+            <label>
+              Keep alive (minutes)
+              <input id="serverRuntimeInput" type="number" min="60" max="330" value="330" />
+            </label>
+          </div>
+        </div>
+
+        <div id="clientSettings" class="hidden">
+          <div class="row">
+            <label>
+              Loader
+              <select id="loaderInput">
+                <option value="vanilla">Vanilla</option>
+                <option value="fabric">Fabric</option>
+                <option value="forge">Forge</option>
+                <option value="quilt">Quilt</option>
+                <option value="neoforge">NeoForge</option>
+                <option value="legacy-fabric">Legacy Fabric</option>
+                <option value="legacy-forge">Legacy Forge</option>
+              </select>
+            </label>
+
+            <label>
+              Auth mode
+              <select id="authModeInput">
+                <option value="offline">Offline</option>
+                <option value="microsoft">Microsoft</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="row">
+            <label>
+              Render preset
+              <select id="presetInput">
+                <option value="tiny">Tiny</option>
+                <option value="low">Low</option>
+                <option value="balanced" selected>Balanced</option>
+                <option value="high">High</option>
+                <option value="ultra">Ultra</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+
+            <label>
+              Offline username
+              <input id="offlineUserInput" type="text" value="GlidePlayer" />
+            </label>
+          </div>
+
+          <div class="row">
+            <label>
+              Width
+              <input id="renderWidthInput" type="number" min="320" value="1280" />
+            </label>
+
+            <label>
+              Height
+              <input id="renderHeightInput" type="number" min="180" value="720" />
+            </label>
+          </div>
+
+          <div class="status-box">
+            <div class="small">Client files</div>
+            <p class="muted">
+              Files are saved using the selected Minecraft version. Mods and datapacks are also separated by loader.
+            </p>
+            <div class="row">
+              <label>
+                Mods
+                <input id="clientModsInput" type="file" multiple accept=".jar,.zip,.mrpack" />
+              </label>
+              <label>
+                Resource packs
+                <input id="clientResourcepacksInput" type="file" multiple accept=".zip" />
+              </label>
+            </div>
+            <div class="row">
+              <label>
+                Datapack folder
+                <input id="clientDatapacksInput" type="file" webkitdirectory directory multiple />
+              </label>
+              <label>
+                World folder
+                <input id="clientWorldsInput" type="file" webkitdirectory directory multiple />
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="saveClientFilesBtn" type="button">Save client files to repo</button>
+            </div>
+            <div id="clientFilesStatus" class="muted">No client files selected.</div>
+          </div>
+
+          <label>
+            Client view
+            <select id="clientViewInput">
+              <option value="embedded" selected>View Minecraft inside this HTML</option>
+              <option value="cloudflare">Open the Cloudflare client page</option>
+            </select>
+          </label>
+          <p class="muted">
+            Embedded mode keeps the Minecraft client in this page when the streaming service allows iframe embedding.
+          </p>
+        </div>
+
+        <div class="button-row">
+          <button id="generateBtn" type="button">Generate config</button>
+        </div>
+      </div>
+
+      <div id="outputPanel" class="box hidden">
+        <h2>5. Generated config</h2>
+        <p class="muted">Review it, then trigger the matching GitHub Action.</p>
+        <pre id="configOutput"></pre>
+
+        <div class="button-row">
+          <button id="launchBtn" type="button">Launch server/client</button>
+          <button id="checkClientBtn" class="secondary" type="button">Check / Load Client</button>
+          <button id="downloadBtn" class="secondary" type="button">Download JSON</button>
+          <button id="copyBtn" type="button">Copy JSON</button>
+        </div>
+
+        <div class="status-box">
+          <div class="small">Progress</div>
+          <div class="progress-shell">
+            <div id="launchProgressBar" class="progress-fill"></div>
+          </div>
+          <div id="launchStatus" class="muted">Idle</div>
+          <pre id="launchDetails">No job started yet.</pre>
+        </div>
+
+        <div id="sessionDetails" class="status-box hidden">
+          <div class="small">Client session</div>
+          <div><strong>URL:</strong> <span id="sessionUrl" class="ok">-</span></div>
+          <div><strong>Username:</strong> <span id="sessionUser">-</span></div>
+          <div><strong>Password:</strong> <span id="sessionPassword">-</span></div>
+          <div class="button-row">
+            <button id="openSessionBtn" type="button">Open client</button>
+          </div>
+          <div id="embeddedClientBox" class="hidden" style="margin-top:12px;">
+            <p class="muted">If the browser permits embedded streaming, Minecraft will appear below.</p>
+            <iframe id="embeddedClientFrame" title="Glide Minecraft client" allow="autoplay; fullscreen; gamepad; microphone" style="width:100%; min-height:600px; border:1px solid var(--line); border-radius:8px; background:#000;"></iframe>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const TOKEN_STORAGE_KEY = 'glide-github-token';
+      const TOKEN_STORAGE_MAX_LENGTH = 4096;
+      const state = {
+        token: '',
+        selectedRepo: null,
+        selectedMode: null,
+        uploadedPlugins: [],
+        uploadedClientFiles: [],
+        defaultBranch: 'main',
+        lastRunId: null,
+        clientSession: null
+      };
+      const tokenInput = document.getElementById('tokenInput');
+      const checkGitHubBtn = document.getElementById('checkGitHubBtn');
+      const repoPanel = document.getElementById('repoPanel');
+      const modePanel = document.getElementById('modePanel');
+      const settingsPanel = document.getElementById('settingsPanel');
+      const outputPanel = document.getElementById('outputPanel');
+      const repoList = document.getElementById('repoList');
+      const serverSettings = document.getElementById('serverSettings');
+      const clientSettings = document.getElementById('clientSettings');
+      const configOutput = document.getElementById('configOutput');
+      const pluginList = document.getElementById('pluginList');
+      const launchStatus = document.getElementById('launchStatus');
+      const launchDetails = document.getElementById('launchDetails');
+      const launchProgressBar = document.getElementById('launchProgressBar');
+      const sessionDetails = document.getElementById('sessionDetails');
+      const sessionUrl = document.getElementById('sessionUrl');
+      const sessionUser = document.getElementById('sessionUser');
+      const sessionPassword = document.getElementById('sessionPassword');
+      const openSessionBtn = document.getElementById('openSessionBtn');
+      const checkClientBtn = document.getElementById('checkClientBtn');
+      const embeddedClientBox = document.getElementById('embeddedClientBox');
+      const embeddedClientFrame = document.getElementById('embeddedClientFrame');
+
+      function setLaunchProgress(percent, text) {
+        launchProgressBar.style.width = `${percent}%`;
+        launchStatus.textContent = text;
+      }
+
+      function saveToken() {
+        try {
+          if (state.token && state.token.length <= TOKEN_STORAGE_MAX_LENGTH) {
+            localStorage.setItem(TOKEN_STORAGE_KEY, state.token);
+          }
+        } catch (_) {
+          // Some downloaded/local HTML environments block or limit localStorage.
+        }
+      }
+
+      function loadToken() {
+        try {
+          const saved = localStorage.getItem(TOKEN_STORAGE_KEY);
+          if (saved) {
+            state.token = saved;
+            tokenInput.value = saved;
+          }
+        } catch (_) {}
+      }
+
+      function b64Encode(buffer) {
+        let binary = '';
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
+      }
+
+      function clientVersion() {
+        return document.getElementById('versionInput').value.trim() || '1.21.4';
+      }
+
+      function clientLoader() {
+        return document.getElementById('loaderInput').value;
+      }
+
+      function safeRepoPath(value) {
+        return String(value || '')
+          .replace(/\\/g, '/')
+          .split('/')
+          .filter(part => part && part !== '.' && part !== '..')
+          .map(part => part.replace(/[<>:"|?*\\x00-\\x1F]/g, '_'))
+          .join('/');
+      }
+
+      async function uploadClientFiles(files, basePath, label) {
+        if (!state.selectedRepo) throw new Error('Pick the Glide repo first.');
+        if (!state.token) throw new Error('Add a GitHub token first.');
+        if (!files || !files.length) throw new Error('Choose at least one file or folder first.');
+
+        const [owner, repo] = state.selectedRepo.split('/');
+        const version = clientVersion();
+        const loader = clientLoader();
+        let count = 0;
+
+        for (const file of files) {
+          const relative = safeRepoPath(file.webkitRelativePath || file.name);
+          if (!relative) continue;
+
+          const path = basePath
+            .replace('{version}', encodeURIComponent(version))
+            .replace('{loader}', encodeURIComponent(loader))
+            .replace('{relative}', relative.split('/').map(encodeURIComponent).join('/'));
+
+          const encoded = b64Encode(await file.arrayBuffer());
+          const response = await fetch(
+            `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+            {
+              method: 'PUT',
+              headers: {
+                Authorization: `Bearer ${state.token}`,
+                Accept: 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                message: `Save client ${label}: ${relative}`,
+                content: encoded,
+                branch: state.defaultBranch || 'main'
+              })
+            }
+          );
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`${relative}: ${response.status} ${errorText}`);
+          }
+
+          count++;
+          state.uploadedClientFiles.push(path);
+        }
+
+        return count;
+      }
+
+      function updatePluginList() {
+        if (!state.uploadedPlugins.length) {
+          pluginList.textContent = 'No plugin files added yet.';
+          return;
+        }
+        pluginList.innerHTML = state.uploadedPlugins.map(file => `<div>• ${file}</div>`).join('');
+      }
+
+      function buildConfigObject() {
+        const config = {
+          mode: state.selectedMode,
+          repo: state.selectedRepo,
+          permissions: {
+            repo: 'required',
+            actions: 'recommended',
+            contents: 'required for repo-backed saves and plugin files'
+          },
+          minecraft_version: document.getElementById('versionInput').value.trim() || '1.21.4',
+          max_ram_gb: Number(document.getElementById('ramInput').value || 8),
+          plugin_files: state.uploadedPlugins.slice(),
+          settings: {}
+        };
+
+        if (state.selectedMode === 'client') {
+          config.settings = {
+            loader: document.getElementById('loaderInput').value,
+            auth_mode: document.getElementById('authModeInput').value,
+            render_preset: document.getElementById('presetInput').value,
+            render_width: Number(document.getElementById('renderWidthInput').value || 1280),
+            render_height: Number(document.getElementById('renderHeightInput').value || 720),
+            offline_username: document.getElementById('offlineUserInput').value,
+            client_view: document.getElementById('clientViewInput').value,
+            runner_label: 'ubuntu-latest'
+          };
+        } else {
+          config.settings = {
+            server_name: document.getElementById('serverNameInput').value,
+            server_description: document.getElementById('serverDescriptionInput').value,
+            server_type: document.getElementById('serverTypeInput').value,
+            online_mode: document.getElementById('onlineModeInput').value === 'true',
+            max_runtime_minutes: Number(document.getElementById('serverRuntimeInput').value || 330),
+            plugins: String(document.getElementById('pluginsInput').value || '')
+              .split(/\n|,/)
+              .map(item => item.trim())
+              .filter(Boolean),
+            uploaded_plugin_files: state.uploadedPlugins.slice()
+          };
+        }
+
+        return config;
+      }
+
+      async function loadJsZip() {
+        if (window.JSZip) return;
+        await new Promise((resolve, reject) => {
+          const tag = document.createElement('script');
+          tag.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+          tag.onload = resolve;
+          tag.onerror = () => reject(new Error('Could not load JSZip for log parsing.'));
+          document.head.appendChild(tag);
+        });
+      }
+
+      async function parseClientSessionFromLogs(runId) {
+        if (!state.selectedRepo || state.selectedMode !== 'client') return;
+        const [owner, repo] = state.selectedRepo.split('/');
+        const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/logs`, {
+          headers: {
+            Authorization: `Bearer ${state.token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`Could not fetch client logs: ${response.status}`);
+        }
+
+        await loadJsZip();
+        const zip = await JSZip.loadAsync(await response.blob());
+        let url = '';
+        let username = '';
+        let password = '';
+
+        for (const entry of Object.values(zip.files)) {
+          if (entry.dir) continue;
+          const text = await entry.async('text');
+          const urlMatch = text.match(/GLIDE_SELKIES_URL=(https?:\/\/[^\s]+)/i) || text.match(/https?:\/\/[-a-z0-9]+\.trycloudflare\.com[^\s]*/i);
+          const userMatch = text.match(/GLIDE_SELKIES_USER=([^\s]+)/i);
+          const passMatch = text.match(/GLIDE_SELKIES_PASSWORD=([^\s]+)/i);
+
+          if (urlMatch) url = urlMatch[1] || urlMatch[0];
+          if (userMatch) username = userMatch[1];
+          if (passMatch) password = passMatch[1];
+        }
+
+        if (!url && !username && !password) {
+          return null;
+        }
+
+        return { url, username: username || 'glide', password: password || 'not-found' };
+      }
+
+      function loadClientSession(session, run) {
+        state.clientSession = session;
+        if (run && run.id) state.lastRunId = run.id;
+
+        sessionDetails.classList.remove('hidden');
+        sessionUrl.textContent = session.url || '-';
+        sessionUser.textContent = session.username || 'glide';
+        sessionPassword.textContent = session.password || 'not-found';
+
+        const viewMode = document.getElementById('clientViewInput').value;
+        if (session.url && viewMode === 'embedded') {
+          embeddedClientBox.classList.remove('hidden');
+          embeddedClientFrame.src = session.url;
+          openSessionBtn.textContent = 'Open Cloudflare page';
+        } else {
+          openSessionBtn.textContent = 'Open client';
+        }
+      }
+
+      async function fetchLatestRunId(workflowFile) {
+        const [owner, repo] = state.selectedRepo.split('/');
+        const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflowFile}/runs?per_page=10`, {
+          headers: {
+            Authorization: `Bearer ${state.token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed to list workflow runs: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const runs = Array.isArray(data.workflow_runs) ? data.workflow_runs : [];
+        if (!runs.length) {
+          throw new Error('No workflow runs showed up yet.');
+        }
+        return runs[0];
+      }
+
+      async function startWorkflowRun() {
+        if (!state.selectedRepo || !state.selectedMode) {
+          alert('Pick a repo and mode first.');
+          return;
+        }
+
+        const config = buildConfigObject();
+        const workflowFile = state.selectedMode === 'server' ? 'server-session.yml' : 'glide-session.yml';
+        const [owner, repo] = state.selectedRepo.split('/');
+        const payload = {
+          ref: state.defaultBranch || 'main',
+          inputs: {
+            minecraft_version: config.minecraft_version,
+            xmx_gb: String(config.max_ram_gb),
+            ...(state.selectedMode === 'client' ? {
+              loader: config.settings.loader,
+              render_preset: config.settings.render_preset,
+              render_width: String(config.settings.render_width),
+              render_height: String(config.settings.render_height),
+              runner_label: config.settings.runner_label,
+              auth_mode: config.settings.auth_mode,
+              offline_username: config.settings.offline_username,
+              skin_model: 'classic'
+            } : {
+              online_mode: String(config.settings.online_mode),
+              server_name: config.settings.server_name,
+              server_description: config.settings.server_description,
+              max_runtime_minutes: String(config.settings.max_runtime_minutes)
+            })
+          }
+        };
+
+        setLaunchProgress(20, 'Dispatching workflow...');
+        launchDetails.textContent = `Starting ${workflowFile} on ${state.selectedRepo}...`;
+
+        const dispatchStartedAt = Date.now();
+        const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflowFile}/dispatches`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${state.token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (response.status !== 204) {
+          const text = await response.text();
+          throw new Error(`Workflow dispatch failed: ${response.status} ${text}`);
+        }
+
+        setLaunchProgress(30, 'Workflow queued. Waiting for the client to start...');
+
+        const deadline = Date.now() + 15 * 60 * 1000;
+        let run = null;
+
+        while (Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 5000));
+
+          const latest = await fetchLatestRunId(workflowFile);
+          if (!latest || !latest.id) continue;
+
+          const latestCreated = Date.parse(latest.created_at || latest.run_started_at || '');
+          if (latestCreated && latestCreated + 30000 < dispatchStartedAt) {
+            setLaunchProgress(32, 'Workflow queued. Waiting for GitHub to create the run...');
+            continue;
+          }
+
+          run = latest;
+          state.lastRunId = run.id;
+
+          if (state.selectedMode === 'client') {
+            try {
+              const session = await parseClientSessionFromLogs(run.id);
+              if (session && session.url) {
+                loadClientSession(session, run);
+
+                launchDetails.textContent =
+                  `Run ID: ${run.id}\nStatus: ${run.status}\nURL: ${run.html_url}\n\nClient session is ready.`;
+
+                setLaunchProgress(100, 'Client ready.');
+                return;
+              }
+            } catch (_) {
+              // Live log archives can briefly be unavailable while a run starts.
+            }
+          }
+
+          if (run.status === 'completed') {
+            setLaunchProgress(100, 'Workflow finished.');
+            launchDetails.textContent = `Run ${run.id} finished with conclusion: ${run.conclusion || 'unknown'}\n${run.html_url}`;
+            throw new Error(state.selectedMode === 'client'
+              ? 'The client workflow finished before its streaming URL became available.'
+              : 'The workflow finished.');
+          }
+
+          const elapsed = Math.max(0, Date.now() - dispatchStartedAt);
+          const progress = 30 + Math.min(65, (elapsed / (15 * 60 * 1000)) * 65);
+          setLaunchProgress(Math.min(95, progress), `Run is ${run.status}. Waiting for the client...`);
+          launchDetails.textContent = `Run ID: ${run.id}\nStatus: ${run.status}\nURL: ${run.html_url}\n\nWaiting up to 15 minutes for the client session to become ready.`;
+        }
+
+        throw new Error('The client did not become ready within 15 minutes. Use “Check / Load Client” to manually check the latest client run.');
+      }
+
+      document.getElementById('saveClientFilesBtn').addEventListener('click', async () => {
+        const status = document.getElementById('clientFilesStatus');
+        const jobs = [
+          [document.getElementById('clientModsInput').files, 'Client/mods/{version}/{loader}/{relative}', 'mods'],
+          [document.getElementById('clientResourcepacksInput').files, 'Client/{version}/resourcepacks/{relative}', 'resource packs'],
+          [document.getElementById('clientDatapacksInput').files, 'Client/{version}/datapacks/{loader}/{relative}', 'datapacks'],
+          [document.getElementById('clientWorldsInput').files, 'Client/{version}/worlds/{relative}', 'worlds']
+        ];
+
+        const selected = jobs.filter(([files]) => files && files.length);
+        if (!selected.length) {
+          alert('Choose at least one client file or folder first.');
+          return;
+        }
+
+        const button = document.getElementById('saveClientFilesBtn');
+        button.disabled = true;
+        status.textContent = 'Saving client files...';
+
+        try {
+          let total = 0;
+          for (const [files, path, label] of selected) {
+            total += await uploadClientFiles(files, path, label);
+          }
+          status.textContent = `${total} client file(s) saved for Minecraft ${clientVersion()} / ${clientLoader()}.`;
+        } catch (error) {
+          status.textContent = error.message || 'Client file upload failed.';
+          alert(error.message || 'Client file upload failed.');
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      document.getElementById('addPluginsBtn').addEventListener('click', async () => {
+        const files = document.getElementById('pluginFilesInput').files;
+        if (!state.selectedRepo) {
+          alert('Pick the Glide repo first.');
+          return;
+        }
+        if (!files || !files.length) {
+          alert('Choose at least one plugin file to import.');
+          return;
+        }
+        if (!state.token) {
+          alert('Add your GitHub token first.');
+          return;
+        }
+
+        const [owner, repo] = state.selectedRepo.split('/');
+        if (!owner || !repo) {
+          alert('The selected repo data is invalid.');
+          return;
+        }
+
+        pluginList.textContent = 'Uploading files...';
+
+        for (const file of files) {
+          try {
+            const buffer = await file.arrayBuffer();
+            const encoded = b64Encode(buffer);
+            const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/Server/Plugins/${file.name}`, {
+              method: 'PUT',
+              headers: {
+                Authorization: `Bearer ${state.token}`,
+                Accept: 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                message: `Add plugin ${file.name}`,
+                content: encoded,
+                branch: state.defaultBranch || 'main'
+              })
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              throw new Error(`${file.name}: ${response.status} ${errorText}`);
+            }
+
+            state.uploadedPlugins.push(file.name);
+            const textarea = document.getElementById('pluginsInput');
+            const currentValue = textarea.value.trim();
+            const nextValue = currentValue ? `${currentValue}\n${file.name}` : file.name;
+            textarea.value = nextValue;
+          } catch (error) {
+            pluginList.innerHTML = `<div class="warn">${error.message}</div>`;
+            return;
+          }
+        }
+
+        updatePluginList();
+      });
+
+      window.checkGlideGitHub = async function () {
+        const token = tokenInput.value.trim();
+        if (!token) {
+          alert('Add a GitHub token first.');
+          tokenInput.focus();
+          return;
+        }
+
+        checkGitHubBtn.disabled = true;
+        checkGitHubBtn.textContent = 'Checking...';
+        repoPanel.classList.remove('hidden');
+        repoList.innerHTML = '<p class="muted">Checking GitHub...</p>';
+
+        try {
+          const response = await fetch('https://api.github.com/user/repos?per_page=100', {
+            headers: {
+              Authorization: 'Bearer ' + token,
+              Accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28'
+            }
+          });
+
+          if (!response.ok) {
+            let detail = '';
+            try {
+              const data = await response.json();
+              detail = data.message ? ' ' + data.message : '';
+            } catch (_) {}
+            throw new Error('GitHub returned ' + response.status + '.' + detail);
+          }
+
+          const repos = await response.json();
+          state.token = token;
+          saveToken();
+
+          const glideRepos = repos
+            .filter(repo => repo.name.toLowerCase().includes('glide'))
+            .sort((a, b) => a.name.localeCompare(b.name));
+
+          if (!glideRepos.length) {
+            repoList.innerHTML = '<p class="warn">No repos with “Glide” in the name were found.</p>';
+            return;
+          }
+
+          repoList.innerHTML = '';
+          for (const repo of glideRepos) {
+            const card = document.createElement('div');
+            card.className = 'repo-card';
+
+            const info = document.createElement('div');
+            const name = document.createElement('div');
+            name.className = 'repo-name';
+            name.textContent = repo.full_name;
+            const desc = document.createElement('div');
+            desc.className = 'repo-desc';
+            desc.textContent = repo.description || 'No description provided.';
+            info.append(name, desc);
+
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = 'This is the Glide repo';
+            button.addEventListener('click', () => {
+              state.selectedRepo = repo.full_name;
+              state.defaultBranch = repo.default_branch || 'main';
+              modePanel.classList.remove('hidden');
+            });
+
+            card.append(info, button);
+            repoList.appendChild(card);
+          }
+        } catch (error) {
+          repoList.innerHTML = '<p class="warn">' +
+            (error && error.message ? error.message : 'GitHub check failed.') +
+            '</p>';
+        } finally {
+          checkGitHubBtn.disabled = false;
+          checkGitHubBtn.textContent = 'Check GitHub';
+        }
+      };
+
+      checkGitHubBtn.addEventListener('click', window.checkGlideGitHub);
+
+      document.getElementById('serverModeBtn').addEventListener('click', () => {
+        state.selectedMode = 'server';
+        settingsPanel.classList.remove('hidden');
+        document.getElementById('settingsTitle').textContent = '4. Server settings';
+        serverSettings.classList.remove('hidden');
+        clientSettings.classList.add('hidden');
+      });
+
+      document.getElementById('clientModeBtn').addEventListener('click', () => {
+        state.selectedMode = 'client';
+        settingsPanel.classList.remove('hidden');
+        document.getElementById('settingsTitle').textContent = '4. Client settings';
+        clientSettings.classList.remove('hidden');
+        serverSettings.classList.add('hidden');
+      });
+
+      document.getElementById('generateBtn').addEventListener('click', () => {
+        if (!state.selectedRepo) {
+          alert('Pick a Glide repo first.');
+          return;
+        }
+
+        const config = buildConfigObject();
+        configOutput.textContent = JSON.stringify(config, null, 2);
+        outputPanel.classList.remove('hidden');
+      });
+
+      openSessionBtn.addEventListener('click', () => {
+        if (!state.clientSession || !state.clientSession.url) {
+          alert('The client session is not ready yet.');
+          return;
+        }
+
+        const viewMode = document.getElementById('clientViewInput').value;
+        if (viewMode === 'embedded') {
+          embeddedClientBox.classList.remove('hidden');
+          embeddedClientFrame.src = state.clientSession.url;
+          openSessionBtn.textContent = 'Open Cloudflare page';
+        } else {
+          window.open(state.clientSession.url, '_blank', 'noopener,noreferrer');
+        }
+      });
+
+      checkClientBtn.addEventListener('click', async () => {
+        try {
+          if (!state.token) {
+            alert('Add your GitHub token first.');
+            return;
+          }
+          if (!state.selectedRepo) {
+            alert('Pick the Glide repo first.');
+            return;
+          }
+
+          checkClientBtn.disabled = true;
+          checkClientBtn.textContent = 'Checking client...';
+          setLaunchProgress(45, 'Checking the latest client workflow...');
+          launchDetails.textContent = 'Looking for the latest glide-session.yml run and its streaming URL...';
+
+          const run = await fetchLatestRunId('glide-session.yml');
+          if (!run || !run.id) {
+            throw new Error('No client workflow run was found.');
+          }
+
+          state.lastRunId = run.id;
+          const session = await parseClientSessionFromLogs(run.id);
+
+          if (!session || !session.url) {
+            launchDetails.textContent =
+              `Run ID: ${run.id}\nStatus: ${run.status}\nURL: ${run.html_url}\n\nNo streaming URL is available yet. Try this button again when the workflow has started Selkies.`;
+            setLaunchProgress(50, 'Client is not ready yet.');
+            return;
+          }
+
+          loadClientSession(session, run);
+          launchDetails.textContent =
+            `Run ID: ${run.id}\nStatus: ${run.status}\nURL: ${run.html_url}\n\nClient session loaded manually.`;
+          setLaunchProgress(100, 'Client loaded.');
+        } catch (error) {
+          setLaunchProgress(0, 'Client check failed');
+          launchDetails.textContent = error.message || 'Unknown error';
+          alert(error.message || 'Client check failed.');
+        } finally {
+          checkClientBtn.disabled = false;
+          checkClientBtn.textContent = 'Check / Load Client';
+        }
+      });
+
+      document.getElementById('launchBtn').addEventListener('click', async () => {
+        try {
+          if (!state.token) {
+            alert('Add your GitHub token first.');
+            return;
+          }
+          await startWorkflowRun();
+        } catch (error) {
+          setLaunchProgress(0, 'Launch failed');
+          launchDetails.textContent = error.message || 'Unknown error';
+          alert(error.message || 'Launch failed.');
+        }
+      });
+
+      document.getElementById('downloadBtn').addEventListener('click', () => {
+        const blob = new Blob([configOutput.textContent], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'glide-config.json';
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+
+      document.getElementById('copyBtn').addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(configOutput.textContent);
+          alert('Config copied.');
+        } catch (error) {
+          alert('Clipboard failed. Download the JSON instead.');
+        }
+      });
+
+      loadToken();
+    </script>
+  </body>
+</html>

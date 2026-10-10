@@ -1,0 +1,18 @@
+[package]
+name = "glide-gfx"
+version = "0.1.0"
+edition = "2021"
+description = "A basic gpu for minecraft cuz github actions comes without one"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+validation = []
+vulkan = ["dep:ash", "dep:shaderc", "dep:x11"]
+
+[dependencies]
+ash = { version = "0.38", optional = true }
+shaderc = { version = "0.8", optional = true }
+x11 = { version = "2.21", features = ["xlib"], optional = true }

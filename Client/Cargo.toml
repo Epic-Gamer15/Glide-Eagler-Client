@@ -1,0 +1,6 @@
+[workspace]
+members = ["glide-gfx", "glide-gl-bridge"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
